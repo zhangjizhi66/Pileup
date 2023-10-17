@@ -39,18 +39,18 @@ const double overflow = 10000;  // find overflow value at (overflow, +inf)
 
 const int peak2trig = trise;
 
-const int flushlowedge = 2400;
+const int flushlowedge = 2500;
 
-const double standardfwhm = 20;
+const double standardfwhm = length/5;
+
+const int maxoverflow = 20000;       // upper limit of peak height
 
 // fitting parameter
 const int maxpeakfitinterval = 2;      // max peak initial value interval
 const int targetchi2ndf = 100;         // target chi2/ndf of fitting
-const int maxaddpeaks = 5;             // max npeaks allowed being added to fitting
+const int maxaddpeaks = 10;             // max npeaks allowed being added to fitting
 const int lowestfittedpeak = 50;       // if lower, abandon this peak
-const double optimizechi2ndf_1 = 0.9;  // add a peak must lower chi2ndf by this portion, otherwise no extra peak
-const double optimizechi2ndf_2 = 0.7;  // add a peak must lower chi2ndf by this portion, otherwise no extra peak
-const int maxoverflow = 20000;       // upper limit of peak height
+const double optimizechi2ndf = 0.8;  // add a peak must lower chi2ndf by this portion, otherwise no extra peak
 const int lowestheight = 5;           // lowest height, times of noise level
 
 #define WAVEFORM

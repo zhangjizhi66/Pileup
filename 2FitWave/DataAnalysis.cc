@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <iostream>
 #include <time.h>
-
+#include <map>
 #include <vector>
 
 //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
@@ -138,9 +138,9 @@ void DataAnalysis::Loop(TFile *opf_, TTree *opt_, Long64_t startentry = -1, Long
                 det.wave.assign((*br_event)[i].data.begin(),(*br_event)[i].data.end());
                 // det.wave.size()    det.wave[i]
             }
-            det.wavepos.clear();
-            det.wavescale.clear();
-            det.wavepileup.clear();
+            det.twave.clear();
+            det.ewave.clear();
+            det.nwave.clear();
 #endif
             //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
 
@@ -177,13 +177,17 @@ void DataAnalysis::Loop(TFile *opf_, TTree *opt_, Long64_t startentry = -1, Long
             for (int ipnt = 0; ipnt < int(vdet[ihit].wave.size()); ipnt++)
                 gwave->SetPoint(ipnt, ipnt, vdet[ihit].wave[ipnt] - base);
             
-            // find overflow value
+            // find overflow value and reject points
             rejval = -10000;
             for (int ipnt = 1; ipnt < gwave->GetN()-1; ipnt++)
                 if ( gwave->GetPointY(ipnt) == gwave->GetPointY(ipnt-1) && gwave->GetPointY(ipnt) == gwave->GetPointY(ipnt+1) && gwave->GetPointY(ipnt) > overflow ){
                     rejval = gwave->GetPointY(ipnt);
                     break;
                 }
+            vrejpnts.clear();
+            for ( int ipnt = 0; ipnt < gwave->GetN(); ipnt++ )
+                if ( gwave->GetPointY(ipnt) == rejval )
+                    vrejpnts.push_back(ipnt);
             
             // fastfilter
 
@@ -218,30 +222,24 @@ void DataAnalysis::Loop(TFile *opf_, TTree *opt_, Long64_t startentry = -1, Long
             
             
             
-            int npeaks = 1;
-            for (int itrig = 0; itrig < int(vtrig.size()); itrig += npeaks){
+            int npeaks0 = 1;
+            for (int itrig = 0; itrig < int(vtrig.size()); itrig += npeaks0){
 
                 if ( vtrig[itrig] < flushlowedge ) continue;
                 
                 // get number of peaks (pileup)
-                npeaks = 1;
+                npeaks0 = 1;
                 for (int jtrig = itrig+1; jtrig < int(vtrig.size()); jtrig++){
                     if (vtrig[jtrig] - vtrig[jtrig-1] <= minpileup)
-                        npeaks++;
+                        npeaks0++;
                     else
                         break;
                 }
 
                 // fit range
                 int left = std::max(0, vtrig[itrig+0] + rangeuseleft);
-                int right = std::min( vtrig[itrig+npeaks-1] + rangeuseright, int(vdet[ihit].wave.size()) );
+                int right = std::min( vtrig[itrig+npeaks0-1] + rangeuseright, int(vdet[ihit].wave.size()) );
                 right += 10;
-             
-                // reject points
-                vrejpnts.clear();
-                for ( int ipnt = left; ipnt < right; ipnt++ )
-                    if ( gwave->GetPointY(ipnt) == rejval )
-                        vrejpnts.push_back(ipnt);
                 
                 // lowest height cut
                 double height = 0;
@@ -252,120 +250,164 @@ void DataAnalysis::Loop(TFile *opf_, TTree *opt_, Long64_t startentry = -1, Long
                 if ( height < lowestheight*noise ) continue;
                 
                 // find peaks
-                std::vector<int> vmaxpnt;
-                for (int jtrig = itrig; jtrig < itrig+npeaks; jtrig++)
-                    vmaxpnt.push_back( vtrig[jtrig] + peak2trig );
+                std::vector<double> vx, vy;
+                for (int jtrig = itrig; jtrig < itrig+npeaks0; jtrig++)
+                    vx.push_back( vtrig[jtrig] + peak2trig );
                 
                 // fit
-                TF1 *f = nullptr;
-                double maxdiff = 0, mindiff = 0;
-                int maxpnt = -1, minpnt = -1;
-                double chi2ndf = -1, lastchi2ndf = -1;
+                TF1 *f = new TF1("ffit", ffit, left, right, 3*npeaks0+1);
+                f->SetNpx(right-left);
+                double chi2ndf = -1, chi2ndf1 = -1;
                 TFitResultPtr fr;
-
+                std::multimap<Int_t,Double_t> me;
+                int npeaks = vx.size();
+                
+                // first fit
+                f->FixParameter(0, npeaks);
+                for (int ipeak = 0; ipeak < npeaks; ipeak++){
+                    f->SetParameter(3*ipeak+1, gwave->GetPointY(vx[ipeak]));
+                    f->SetParLimits(3*ipeak+1, 0, 100*rejval);
+                    f->SetParameter(3*ipeak+2, vx[ipeak]);
+                    f->SetParLimits(3*ipeak+2, left - rangeuseright, right - rangeuseleft);
+                    f->FixParameter(3*ipeak+3, 0);
+                }
+                
+                fr = gwave->Fit(f, "SQRN", "", left, right);
+                chi2ndf = fr->Chi2() / fr->Ndf();
+                
+                for (int ipeak = 0; ipeak < npeaks; ipeak++){
+                    vy.push_back(f->GetParameter(3*ipeak+1));
+                    vx[ipeak] = f->GetParameter(3*ipeak+2);
+                }
+                
                 do {
-                    int npeaks = vmaxpnt.size();
-
-                    if (f) delete f;
-                    f = new TF1("ffit", ffit, left, right, 3*npeaks+1);
-                    f->SetNpx(gwave->GetN());
-                    f->FixParameter(0, npeaks);
-                    for (int ipeak = 0; ipeak < npeaks; ipeak++){
-                        f->SetParameter(3*ipeak+1, gwave->GetPointY(vmaxpnt[ipeak]));
-                        f->SetParLimits(3*ipeak+1, 0, 100*rejval);
-                        f->SetParameter(3*ipeak+2, vmaxpnt[ipeak]);
-                        f->SetParLimits(3*ipeak+2, left, right);
-                        f->FixParameter(3*ipeak+3, 0);
-                    }
-
-                    fr = gwave->Fit(f, "SQRN", "", left, right);
-                    chi2ndf = fr->Chi2() / fr->Ndf();
+                    npeaks = vx.size();
                     
-                    // if add a peak doesn't work, abandon it and fit again
-                    double optimizechi2ndf;
-                    if ( lastchi2ndf > 500 ) optimizechi2ndf = optimizechi2ndf_1;
-                    else optimizechi2ndf = optimizechi2ndf_2;
-                    if ( lastchi2ndf > 0 && chi2ndf > optimizechi2ndf*lastchi2ndf ){
-                        delete f;
-                        f = new TF1("ffit", ffit, left, right, 3*(npeaks-1)+1);
-                        f->FixParameter(0, npeaks-1);
-                        for (int ipeak = 0; ipeak < npeaks-1; ipeak++){
-                            f->SetParameter(3*ipeak+1, gwave->GetPointY(vmaxpnt[ipeak]));
-                            f->SetParLimits(3*ipeak+1, 0, 2*gwave->GetPointY(vmaxpnt[ipeak]));
-                            f->SetParameter(3*ipeak+2, vmaxpnt[ipeak]);
-                            f->SetParLimits(3*ipeak+2, left, right);
+                    // find residual error peaks
+                    TH1I* hdiff = new TH1I("", "", right-left, left, right);
+                    for (int ipnt = left; ipnt < right; ipnt++)
+                        hdiff->SetBinContent(ipnt-left, abs( gwave->GetPointY(ipnt) - f->Eval(ipnt) ) );
+                    TSpectrum *s = new TSpectrum(500);
+                    int nfound = s->Search(hdiff, 2, "", 0.1);
+                    double *xpeaks = s->GetPositionX();
+                    double *ypeaks = s->GetPositionY();
+                    
+                    me.clear();
+                    for (int j = 0; j < nfound; j++){
+                        if ( ypeaks[j] < lowestheight*noise ) continue;
+                        
+                        bool repeat = false;
+                        for (int ipeak = 0; ipeak < npeaks; ipeak++)
+                            if ( abs( xpeaks[j] - vx[ipeak] ) <= maxpeakfitinterval ){
+                                repeat = true;
+                                break;
+                            }
+                        if (repeat) continue;
+                        
+                        me.insert(std::make_pair(int(ypeaks[j]),xpeaks[j]));
+                    }
+                    if ( me.empty() ) break;
+                    
+                    // add new peak and fit
+                    bool addnewpeak = false;
+                    if (f) delete f;
+                    f = new TF1("ffit", ffit, left, right, 3*(npeaks+1)+1);
+                    f->SetNpx(right-left);
+                    f->FixParameter(0, npeaks+1);
+                    for (auto im = me.rbegin(); im != me.rend(); im++){
+                        for (int ipeak = 0; ipeak < npeaks; ipeak++){
+                            if ( vx[ipeak] - im->second <= rangeuseleft || vx[ipeak] - im->second >= rangeuseright ){
+                                f->FixParameter(3*ipeak+1, vy[ipeak]);
+                                f->FixParameter(3*ipeak+2, vx[ipeak]);
+                            }
+                            else {
+                                f->SetParameter(3*ipeak+1, vy[ipeak]);
+                                f->SetParLimits(3*ipeak+1, 0, 100*rejval);
+                                f->SetParameter(3*ipeak+2, vx[ipeak]);
+                                f->SetParLimits(3*ipeak+2, left - rangeuseright, right - rangeuseleft);
+                            }
                             f->FixParameter(3*ipeak+3, 0);
                         }
-                        gwave->Fit(f, "QRN", "", left, right);
-                        break;
-                    }
-                    
-                    lastchi2ndf = chi2ndf;
+                        f->SetParameter(3*npeaks+1, gwave->GetPointY(im->second));
+                        f->SetParLimits(3*npeaks+1, 0, 100*rejval);
+                        f->SetParameter(3*npeaks+2, im->second);
+                        f->SetParLimits(3*npeaks+2, left - rangeuseright, right - rangeuseleft);
+                        f->FixParameter(3*npeaks+3, 0);
 
-                    // find new peak initial value
-                    maxdiff = 0;
-                    maxpnt = -1;
-                    mindiff = 0;
-                    minpnt = -1;
-                    for (int ipnt = left; ipnt < right; ipnt++){
-                        double diff = ( gwave->GetPointY(ipnt) - f->Eval(ipnt) );
-                        if (diff > maxdiff){
-                            maxpnt = ipnt;
-                            maxdiff = diff;
-                        }
-                        if (diff < mindiff){
-                            minpnt = ipnt;
-                            mindiff = diff;
-                        }
-                    }
-                    
-                    bool repeat = false;
-                    for (int imaxpnt : vmaxpnt)
-                        if ( abs(maxpnt-imaxpnt) <= maxpeakfitinterval ){
-                            repeat = true;
+                        fr = gwave->Fit(f, "SQRN", "", left, right);
+                        chi2ndf1 = fr->Chi2() / fr->Ndf();
+                        
+                        if ( chi2ndf1 < optimizechi2ndf*chi2ndf ){
+                            addnewpeak = true;
                             break;
                         }
+                    }
                     
-                    if (!repeat)
-                        vmaxpnt.push_back(maxpnt);
+                    if ( addnewpeak ){
+                        for (int ipeak = 0; ipeak < npeaks; ipeak++){
+                            vx[ipeak] = f->GetParameter(3*ipeak+2);
+                            vy[ipeak] = f->GetParameter(3*ipeak+1);
+                        }
+                        vx.push_back(f->GetParameter(3*npeaks+2));
+                        vy.push_back(f->GetParameter(3*npeaks+1));
+                        chi2ndf = chi2ndf1;
+                    }
                     else
-                        vmaxpnt.push_back(minpnt);
-                } while (chi2ndf > targetchi2ndf && int(vmaxpnt.size()) < npeaks + maxaddpeaks);
+                        break;
+                } while (chi2ndf > targetchi2ndf && int(vx.size()) <= npeaks0 + maxaddpeaks);
                 
-                std::vector<double> vpeaks;
-                for (int ipeak = 0; ipeak < f->GetParameter(0); ipeak++){
-                    bool repeat = false;
-                    for (double jpeak : vpeaks)
-                        if ( abs(f->GetParameter(3*ipeak+2) - f->GetParameter(3*jpeak+2)) <= maxpeakfitinterval )
-                            repeat = true;
-                    if ( f->GetParameter(3*ipeak+1) > lowestfittedpeak && !repeat )
-                        vpeaks.push_back(ipeak);
-                }
-                
-                TF1* f0 = new TF1("ffit", ffit, left, right, 3*vpeaks.size()+1);
-                f0->SetNpx(gwave->GetN());
-                f0->FixParameter(0, vpeaks.size());
-                for (int ipeak = 0; ipeak < int(vpeaks.size()); ipeak++){
-                    f0->SetParameter(3*ipeak+1, f->GetParameter(3*vpeaks[ipeak]+1));
-                    f0->SetParLimits(3*ipeak+1, 0, maxoverflow);
-                    f0->SetParameter(3*ipeak+2, f->GetParameter(3*vpeaks[ipeak]+2));
-                    f0->SetParLimits(3*ipeak+2, f->GetParameter(3*vpeaks[ipeak]+2)-10, f->GetParameter(3*vpeaks[ipeak]+2)+10);
-                    f0->FixParameter(3*ipeak+3, 0);
-                }
-                
-                fr = gwave->Fit(f0, "SQR+", "", left, right);
-                chi2ndf = fr->Chi2() / fr->Ndf();
-                        
-                for (int ipeak = 0; ipeak < f0->GetParameter(0); ipeak++){
-                    vdet[ihit].wavescale.push_back( f0->GetParameter(3*ipeak+1) );
-                    vdet[ihit].wavepos.push_back( f0->GetParameter(3*ipeak+2) );
-                    vdet[ihit].wavepileup.push_back( f0->GetParameter(0) - 1 );
+                bool clean = false;
+                while ( !clean ){
+                    int ip = 0;
+                    if (f) delete f;
+                    f = new TF1("ffit", ffit, left, right, 3*vx.size()+1);
+                    f->SetNpx(right-left);
+                    clean = true;
+                    for (int ipeak = 0; ipeak < int(vx.size()); ipeak++){
+                        bool repeat = false;
+                        for (int jp = 0; jp < f->GetParameter(0); jp++)
+                            if ( abs(vx[ipeak] - f->GetParameter(3*jp+2)) <= maxpeakfitinterval )
+                                repeat = true;
+                        if ( vy[ipeak] > lowestfittedpeak && !repeat ){
+                            f->SetParameter(3*ip+1, vy[ipeak]);
+                            f->SetParLimits(3*ip+1, 0, 100*rejval);
+                            f->SetParameter(3*ip+2, vx[ipeak]);
+                            f->SetParLimits(3*ip+2, vx[ipeak]-maxpeakfitinterval, vx[ipeak]+maxpeakfitinterval);
+                            f->FixParameter(3*ip+3, 0);
+                            f->FixParameter(0, ++ip);
+                        }
+                        else
+                            clean = false;
+                    }
+                    for (int ipar = 3*ip+1; ipar < 3*int(vx.size())+1; ipar++)
+                        f->FixParameter(ipar, 0);
+
+                    if (clean)
+                        fr = gwave->Fit(f, "SQR+", "", left, right);
+                    else
+                        fr = gwave->Fit(f, "SQRN", "", left, right);
+                    chi2ndf = fr->Chi2() / fr->Ndf();
                     
-                    TMarker *mark = new TMarker(f0->GetParameter(3*ipeak+2), f0->GetParameter(3*ipeak+1), 23);
+                    vx.clear();
+                    vy.clear();
+                    for (int ipeak = 0; ipeak < f->GetParameter(0); ipeak++){
+                        vy.push_back( f->GetParameter(3*ipeak+1) );
+                        vx.push_back( f->GetParameter(3*ipeak+2) );
+                    }
+                }
+                
+                for (int ipeak = 0; ipeak < f->GetParameter(0); ipeak++){
+                    vdet[ihit].ewave.push_back( f->GetParameter(3*ipeak+1) );
+                    vdet[ihit].twave.push_back( f->GetParameter(3*ipeak+2) );
+                    vdet[ihit].nwave.push_back( f->GetParameter(0) );
+                    
+                    TMarker *mark = new TMarker(f->GetParameter(3*ipeak+2), f->GetParameter(3*ipeak+1), 29);
                     mark->SetMarkerColor(kRed);
                     mark->SetMarkerSize(1);
                     gwave->GetListOfFunctions()->Add(mark);
                 }
+                
+                if (f) delete f;
             }
             
             if ( jentry < 10 ){
@@ -373,7 +415,6 @@ void DataAnalysis::Loop(TFile *opf_, TTree *opt_, Long64_t startentry = -1, Long
                 gwave->Write();
             }
             delete gwave;
-
         }
         
         if ( vdet.size() > 0 )

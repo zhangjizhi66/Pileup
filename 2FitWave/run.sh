@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# ./run 314 270000 54
+# ./run 314 270000 54   CSNSwave202304
+# ./run [218-223] 200000 40   CSNSwave202310
 
 runnum=$1
 

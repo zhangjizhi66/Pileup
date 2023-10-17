@@ -37,7 +37,7 @@ const int maxheight = 10000;  // maximum height to build standard wave
 const int maxoverflow = 20000;
 const int refbin = 10000;
 
-const double standardfwhm = 20;
+const double standardfwhm = length/5;
 
 #define WAVEFORM
 // #define ENERGYSUM

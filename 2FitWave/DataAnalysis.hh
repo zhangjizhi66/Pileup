@@ -90,9 +90,9 @@ typedef struct dets
 #endif
   
     // add info
-    std::vector<float> wavepos;
-    std::vector<float> wavescale;
-    std::vector<int> wavepileup;
+    std::vector<float> twave;
+    std::vector<float> ewave;
+    std::vector<int> nwave;
   
 } dets;
 
